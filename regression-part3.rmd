@@ -1,0 +1,122 @@
+---
+title: "Part 3"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dataset
+
+The dataset includes data from 316 men who underwent radical prostatectomy and received transfusions within 30 days of surgery. It focuses on the storage duration of red blood cells (RBC) as a key factor, alongside demographic and prognostic factors, to predict the time to biochemical cancer recurrence. After removing all rows that contain any NA values, the dataset is reduced to 287 rows, further split into 80% training set and 20% test set.
+
+
+```{r dataset}
+library(medicaldata)
+data("blood_storage")
+blood_storage <- blood_storage[complete.cases(blood_storage) & rowSums(blood_storage == "") == 0, ]
+
+names(blood_storage)[names(blood_storage) == 'BN+'] <- 'BN'
+
+set.seed(130)
+
+index <- sample(1:nrow(blood_storage), nrow(blood_storage)*0.8)
+
+train_data <- blood_storage[index, ]
+test_data <- blood_storage[-index, ]
+
+nrow(blood_storage)
+```
+
+## Selecting Predictors
+
+To select predictor variables, it is useful to look at how each predictor varies in relation to the dependent. Visualizing these relationships helps identify patterns, trends, outliers and potential nonlinearities. 
+
+```{r pairplot}
+par(mfrow = c(2, 2))  
+par(pty = 's', mar = c(3, 1, 1, 1) + 0.1, mgp = c(2, 1, 0))
+for (i in colnames(train_data)) {
+  plot(blood_storage[[i]],  blood_storage$TimeToRecurrence,
+        xlab = paste(i), ylab = "TimeToRecurrence",
+       main = paste(i, "vs TimeToRecurrence"),
+       cex.main = 0.8, cex.lab = 0.6, cex.axis = 0.8,
+       pch = 19, col = "blue", cex = 0.5)
+}
+par(mfrow = c(1, 1))  
+```
+
+Based on these plots,  `BN+`, `AnyAdjTherapy` and `AdjRadTherapy` can be dropped as predictors since almost all datapoints have the same value 0; using a heuristic, it is likely that these factors will help classify very few of the points and their inclusion might be generally uninformative.
+
+On the other hand, variables that seem somewhat informative are `bGS`, `PreopTherapy` and `FamHx` because they show some (slight visual) correlation.
+
+
+Using (my extremely limited) domain knowledge, I'm removing `Recurrence` and `Median.RBC.Age`. The first is only known once the `TimeToRecurrence` is known, which makes it not a great predictor. The second one (intuitively) is derived from `RBC.Age.Group` and is linearly correlated.
+
+```{r rbc_age}
+plot(blood_storage$RBC.Age.Group, blood_storage$Median.RBC.Age)
+```
+
+
+One great thing about linear regression is that if a predictor variable is uninformative or not statistically significant, its coefficient will be estimated close to 0. I will use this as a heuristic to weed out some variables.
+
+```{r linear_model_1}
+
+lm1 <- lm(TimeToRecurrence ~ RBC.Age.Group + Censor  + BN + AnyAdjTherapy + AdjRadTherapy  + Age  + AA  + FamHx  + PVol  + TVol  + T.Stage  + bGS  + OrganConfined  + PreopPSA  + PreopTherapy  + Units  + sGS, data = blood_storage)
+summary(lm1)
+```
+$R^2$ represents the proportion of the variance in the dependent variable that is predictable from the independent variables in the model. It ranges from 0 to 1 and can be interpreted as the percentage of the variance in the dependent variable that is explained by the independent variables. The model has $R^2$ of 0.1347 and Adjusted $R^2$ (which accounts for the number of predictors) of 0.08. This can be loosely translated as "8% of the outcome variable can be explained by the model".
+
+This model is obviously a big overfit with 16 predictors. Its bad performance is only going to get worse once we run it on the test set. The columns `RBC.Age.Group`, `BN`, `Age`, `Pvol`, `OrganConfined` and `PreopPSA` have coefficients closest to 0 and relatively high p-values, and so they are excluded.
+
+I run one more regression to choose variables. Note that $R^2$ will not increase (linear regression does not get worse when there are more predictors) but the model will become simpler and more generalizable, and the adjusted $R^2$ might go up slightly.
+
+```{r linear_model_2}
+lm2 <- lm(TimeToRecurrence ~ Censor  + AnyAdjTherapy + AdjRadTherapy  + AA  + FamHx   + TVol  + T.Stage  + bGS  + PreopTherapy  + Units  + sGS, data = blood_storage)
+summary(lm2)
+
+```
+As expected, $R^2$ is slightly down to 12.5% but Adjusted $R^2$ actually increased to 9.00%. To further simplify the model, the variables that are statistically significant (`Censor`, `FamHx`, `bGS`) are selected as predictors.
+
+```{r linear_model_3}
+lm3 <- lm(TimeToRecurrence ~ Censor  + bGS + FamHx, data = blood_storage)
+summary(lm3)
+```
+The 3rd model has lower $R^2$ but we are down to only 3 predictors and Adjusted $R^2$ is up to 9.3%, so the trade-off between the goodness of fit and the complexity of the model is worth it.
+
+To introduce an interaction term, let's test which interaction of the 3 possible above yields the best results.
+
+
+```{r}
+lm4 <- lm(TimeToRecurrence ~ Censor  + bGS + FamHx + Censor*bGS, data = blood_storage)
+lm5 <- lm(TimeToRecurrence ~ Censor  + bGS + FamHx + FamHx*bGS, data = blood_storage)
+lm6 <- lm(TimeToRecurrence ~ Censor  + bGS + FamHx + Censor*FamHx, data = blood_storage)
+sum4 <- summary(lm4)
+sum5 <- summary(lm5)
+sum6 <- summary(lm6)
+cat('adjusted r^2 for Censor  + bGS + FamHx + Censor*bGS:',sum4$r.squared, '\n')
+cat('adjusted r^2 for Censor  + bGS + FamHx + FamHx*bGS:',sum5$r.squared, '\n')
+cat('adjusted r^2 for Censor  + bGS + FamHx + Censor*FamHx:',sum6$r.squared)
+```
+The best model is `TimeToRecurrence ~ Censor  + bGS + FamHx + Censor*bGS` with $R^2$ of 10.4%.
+```{r}
+predicted_values_train <- predict(lm6, newdata = train_data)
+rmse_train <- sqrt(mean((train_data$TimeToRecurrence - predicted_values_train)^2))
+
+rmse_train
+```
+The RMSE on the train set is 26.26. Let's test it on the test set.
+
+```{r test_set}
+predictions <- predict(lm6, newdata = test_data, type = 'response')
+actual_values <- test_data$TimeToRecurrence
+
+# RMSE
+rmse <- sqrt(mean((predictions - actual_values)^2))
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+The RMSE on the test set is significantly higher, 59.09.
+
+## Executive Summary
+The dataset includes data from 316 men who underwent radical prostatectomy and received transfusions within 30 days of surgery. It focuses on the storage duration of red blood cells (RBC) as a key factor, alongside demographic and prognostic factors, to predict the time to biochemical cancer recurrence. After removing all rows that contain any NA values, the dataset is reduced to 287 rows, further split into 80% training set and 20% test set. In addressing the research question about predicting `TimeToRecurrence` of cancer after radical prostatectomy treatment, I used visualizations to understand the relationships between predictors and the dependent variable. Through these plots, I reasoned that the predictors `BN+`, `AnyAdjTherapy` and `AdjRadTherapy` lacked variability and were therefore uninformative, leading to their exclusion. Additionally,`Recurrence` (which becomes known only after `TimeToRecurrence`) and `Median.RBC.Age` (due to dependency on `Age.RBC.Group`) were removed. The initial model included 16 predictors, resulting in an R² of 13.47%, but it was clearly overfit. To combat this, I refined the model by eliminating variables with coefficients near zero and high p-values, leading to a simpler, more generalizable model with an R² of 12.1% and an increased adjusted R² of 8.7%. For even more simplicity and better interpretability, I further pruned the model, retaining only the statistically significant variables (`Censor`, `FamHx`, `bGS`), yielding the third model with a slightly lower R² but only three predictors. To introduce complexity, I explored interaction terms and found that the best model was `TimeToRecurrence ~ Censor + bGS + FamHx + Censor*FamHx`, which achieved an R² of 10.4% and RMSE of 26.26 on the train set; the model performed poorly on the test set, with more than double the RMSE of 59.09. The model is not recommended for predicting TimeToRecurrence.
+

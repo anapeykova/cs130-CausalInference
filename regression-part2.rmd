@@ -1,0 +1,205 @@
+---
+title: "Part 2"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dataset
+
+The `laryngoscope` dataset has data from 99 adult patients with a body mass index (BMI) between 30 and 50 kg/m² (typically classified as morbidly obese). The dataset aims to understand the ease and success of intubation procedures in morbidly obese patients. Two rows are removed due to unknown BMI.
+
+In the following analyses:
+1. using Loess regression, the target variable is ease of intubation and age is used as its single predictor.
+2. using linear regression, the target variable is ease of intubation and age, BMI and gender are paired into 3 predictor combinations of 2 variables.
+
+```{r dataset}
+library(medicaldata)
+data(laryngoscope)
+
+na_BMI <- sum(is.na(laryngoscope$BMI))
+cat('Removing',na_BMI,'rows due to unknown BMI.')
+laryngoscope <- laryngoscope[!is.na(laryngoscope$BMI), ]
+
+# colnames(laryngoscope)
+plot(laryngoscope$age, laryngoscope$ease, main = "Age vs Ease of Intubation", xlab = "Age", ylab = "Ease of Intubation", pch = 16, col = "gray")
+```
+
+
+The plot of age and ease of intubation does not show any correlation, so the Loess model or the linear one would not describe the data well.
+
+## Loess Regression
+
+Fitting a Loess model using R's default span = 0.75:
+
+```{r loess_model, echo = TRUE}
+loess_model <- loess(ease ~ age, data = laryngoscope, span = 0.75)
+```
+
+The span is very important for Loess regression. Smaller spans make for more sensitive (less smooth) fits, capturing local fluctuations; if the span is too small, it results in an overfit. Larger spans produce a smoother fit as they consider a broader range of points for each local regression. A span of 1 results in a linear fit (NOTE: in R it doesn't as the function allows for local weighting of points).
+
+Before cross-validating using leave-one-out cross-validation (LOOCV), the dataset needs to be sorted based on the independent variable. This sorting (either in ascending or descending order) simplifies the removal of the first and last data points during LOOCV, ensuring consistent evaluation. Loess regression is limited to the range of the training data. Excluding edge cases (smallest and largest ages) avoids undefined predictions.
+
+
+```{r order_dataset}
+laryngoscope <- laryngoscope[order(laryngoscope$age),]
+```
+
+The order in which LOOCV is run does not impact results, as it is a completely deterministic method: it is expected to output consistent outcomes regardless of when or how it's executed.
+
+Measuring the root mean squared error for Loess regression with different spans:
+
+```{r loess_rmse_loocv}
+
+calculate_loocv_rmse <- function(data, span_value) {
+  n <- nrow(data)
+  sqrd_errors <- numeric(n)
+  
+  for (i in 2:(n - 1)) {
+    data_subset <- data[-i, ] # leave i-th point out
+    
+    # fit loess on the subset of data
+    loess_model <- loess(ease ~ age, data = data_subset, span = span_value)
+    
+    # predict i-th point
+    predicted_value <- predict(loess_model, newdata = data.frame(age = data$age[i]))
+    
+    # the squared error
+    sqrd_errors[i] <- (data$ease[i] - predicted_value)^2
+  }
+  
+  # root mean from LOOCV squared errors
+  rmse <- sqrt(mean(sqrd_errors))
+  cat('Test-set RMSE using LOOCV for Loess regression with span',span_value,':',rmse,'. \n')
+}
+
+calculate_loocv_rmse(laryngoscope, 0.25)
+calculate_loocv_rmse(laryngoscope, 0.5)
+calculate_loocv_rmse(laryngoscope, 0.75)
+
+```
+RMSE of ~30 is a pretty bad result, given that the dependent variable varies in the range 0 to 100. 
+
+```{r visualizing_loess}
+loess_model_25 <- loess(ease ~ age, data = laryngoscope, span = 0.25)
+loess_model_5 <- loess(ease ~ age, data = laryngoscope, span = 0.5)
+loess_model_75 <- loess(ease ~ age, data = laryngoscope, span = 0.75)
+loess_model_100 <- loess(ease ~ age, data = laryngoscope, span = 1)
+
+# Create a scatter plot of the data points
+plot(laryngoscope$age, laryngoscope$ease, main = "Loess Regression with Different Span", xlab = "Age", ylab = "Ease of Intubation", pch = 16, col = "gray")
+
+# loess regression lines
+lines(laryngoscope$age, predict(loess_model_25), col = "lightblue", lwd = 2)
+lines(laryngoscope$age, predict(loess_model_5), col = "steelblue1", lwd = 2)
+lines(laryngoscope$age, predict(loess_model_75), col = "cornflowerblue", lwd = 2)
+lines(laryngoscope$age, predict(loess_model_100), col = "black", lwd = 2)
+
+# Add a legend
+legend("topright", legend = c("0.25", "0.50", "0.75", "1.00"), col = c("lightblue", "steelblue1", "cornflowerblue","black"), lwd = 2, cex = 0.8)
+
+```
+Visualizing the different Loess regression lines, it is easy to see that none of the models are particularly good fits for the data.
+
+## Linear Regression
+
+To compare the Loess model against a linear one, 3 linear models with two predictors each are tested. The predictors are age (integer, between 20 and 77), BMI (float, between 30 and 50) and gender (binary, 0 = female and 1 = male).
+
+
+```{r linear_models, echo=TRUE}
+lm_age_BMI <- lm(ease ~ age + BMI, data = laryngoscope)
+lm_gender_BMI <- lm(ease ~ gender + BMI, data = laryngoscope)
+lm_age_gender <- lm(ease ~ age + gender, data = laryngoscope)
+lm_age_gender_BMI <- lm(ease ~ age + gender + BMI, data = laryngoscope)
+
+```
+
+The best model is selected based on RMSE from LOOCV.
+
+```{r linear_rmse_loocv}
+
+calculate_loocv_rmse <- function(model, data) {
+  n <- nrow(data)
+  sqrd_errors <- numeric(n)
+  
+  for (i in 1:n) {
+    data_subset <- data[-i, ] # leave i-th point out
+    
+    # fit the model on the subset of data
+    model_fit <- lm(model, data = data_subset)
+    
+    # predict i-th point
+    predicted_value <- predict(model_fit, newdata = data[i,])
+    
+    # calculate the squared error
+    sqrd_errors[i] <- (data$ease[i] - predicted_value)^2
+  }
+  
+  # root mean from LOOCV squared errors
+  rmse <- sqrt(mean(sqrd_errors))
+  cat('Test-set RMSE using LOOCV for linear regression', model,':', rmse, '. \n')
+
+}
+
+# Calculate RMSE for each model
+lm_age_BMI <- "ease ~ age + BMI"
+lm_gender_BMI <- "ease ~ gender + BMI"
+lm_age_gender <- "ease ~ age + gender"
+lm_age_gender_BMI <- "ease ~ age + gender + BMI"
+
+rmse_age_BMI <- calculate_loocv_rmse(lm_age_BMI, laryngoscope)
+rmse_gender_BMI <- calculate_loocv_rmse(lm_gender_BMI, laryngoscope)
+rmse_age_gender <- calculate_loocv_rmse(lm_age_gender, laryngoscope)
+rmse_age_gender_BMI <- calculate_loocv_rmse(lm_age_gender_BMI, laryngoscope)
+```
+
+All 4 models perform very poorly, the age + gender one performing the best by a small margin.
+
+Let's further explore the model which combines all 3 predictors and see how it performs based on fixed parameters for gender and BMI, corresponding to 'Female' and the mean BMI for females respectively.
+
+```{r age_gender_intervals}
+# fit the linear regression model
+lm_model <- lm(ease ~ age + BMI + gender, data = laryngoscope)
+
+# fix two of the dimensions
+fixed_BMI <- mean(subset(laryngoscope, gender == 0)$BMI)
+data <- data.frame(age = laryngoscope$age, BMI = rep(fixed_BMI, nrow(laryngoscope)), gender = rep(0, nrow(laryngoscope)))
+data <- data[order(data$age),]
+
+# calculate prediction and confidence intervals
+pred.int <- predict(lm_model, newdata = data, interval = "prediction", level = .99)
+conf.int <- predict(lm_model, newdata = data, interval = "confidence", level = 0.99)
+
+# combine prediction and confidence intervals with the data
+data_pred <- cbind(data, pred.int)
+data_conf <- cbind(data, conf.int)
+
+
+n = length(data_conf$age)
+
+# plot the data points
+plot(laryngoscope$age, laryngoscope$ease, xlab = "Age", ylab = "Ease of Intubation", main = "Age vs. Ease of Intubation for Female Patients with mean BMI (42.04)",pch = 16, col='gray', ylim = c(min(data_pred$lwr), max(data_pred$upr)))
+
+# add the regression line
+lines(x = data_pred$age, y = data_pred$fit, col = "black", lwd = 2)
+
+# add prediction intervals
+lines(x = data_pred$age, y = data_pred$lwr, col = "red", lwd = 2)
+lines(x = data_pred$age, y = data_pred$upr, col = "red", lwd = 2)
+
+# add confidence intervals
+segments(x0 = data_conf$age[1:n-1], x1 = data_conf$age[2:n], y0 = data_conf$upr[1:n-1], y1 = data_conf$upr[2:n], col = "cornflowerblue", lwd = 2)
+segments(x0 = data_conf$age[1:n-1], x1 = data_conf$age[2:n], y0 = data_conf$lwr[1:n-1], y1 = data_conf$lwr[2:n], col = "cornflowerblue", lwd = 2)
+
+# legend
+legend("topright", legend = c("Regression Line", "99% Prediction Interval", "99% Confidence Interval"), col = c("black", "red", "cornflowerblue"), lwd = c(4, 4, 4), cex = 0.6)
+
+
+```
+The plot shows a relatively narrow confidence interval, indicating a reasonable degree of certainty about the average behavior within the dataset. In contrast, the exceptionally wide prediction interval extends well beyond the range (0-100) of the dependent variable. This wide variability makes predicting ease of intubation based solely on the given predictors inaccurate.
+
+## Executive Summary
+
+The `laryngoscope` dataset has data from 99 adult patients with a body mass index (BMI) between 30 and 50 kg/m² (classified as morbidly obese). The dataset aims to understand the ease and success of intubation procedures for an elective surgery. A linear model using age, gender and BMI as predictors is proposed. This model's potential comes from the fact that all predictor variables are known prior to any intubation attempts: if it were a good fit, a doctor can use the model to assess the ease of intubation almost as soon as the patient walks in the office. Unfortunately, these readily availables predictors are not informative and the model describes the data very poorly. The resulting Root Mean Square Error (RMSE) exceeding 30, particularly for a dependent variable within the 0-100 range, shows significant discrepancies between predicted and actual values. The limitations of the current linear model suggest more robust predictors or a different modeling approach are needed.

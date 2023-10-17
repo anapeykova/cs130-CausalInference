@@ -1,0 +1,114 @@
+---
+title: "Part 1"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dataset
+
+The dataset focuses on NEETs (young people not in employment, education, or training) in France, studying the impact of social and preventive medicine consultations offered at Missions locales (MLs). The dataset contains information about 1453 NEETs who took part in the study, split among 3 groups (cohorts) according to treatment: social work, medication and control. Only the 976 who were either assigned medication or control were used as participants in the study, 704 of whom were included in analyses by the authors.
+
+
+This report will focus solely on the social work (SW) and control groups. Rows that contain NA values for level of education are omitted from the dataset.
+
+```{r dataset_preprocessing}
+# load dataset
+setwd("C:/Users/anape/cs130/Assignment_2_Regression")
+neet_data <- read.csv("data/Data_PRESAJE_Dryad_eng.csv")
+# drop medication group and rows with NA values
+cat('Removing', sum(neet_data$Cohort == "Med"), 'medication participants from dataset. ')
+neet_data <- neet_data[neet_data$Cohort != "Med", ]
+cat('Removing', sum(neet_data$Level.of.Education == ""), 'participants from dataset due to unknown education level. ')
+neet_data <- neet_data[neet_data$Level.of.Education != "", ]
+cat('The final dataset contains',nrow(neet_data), 'rows.')
+# binary encoding
+neet_data$Cohort <- as.numeric(neet_data$Cohort == "SW")
+neet_data$Level.of.Education <-
+as.numeric(neet_data$Level.of.Education == "postsecondary")
+neet_data$Follow.up <- as.numeric(neet_data$Follow.up == "follow up")
+neet_data$Sex <- as.numeric(neet_data$Sex == "F")
+```
+
+## Logistic regression model
+
+A logistic model is fitted to the data, with "Follow up" as a dependent variable and "Cohort" (representing the intervention vs. control group), "Sex" (female vs. male), and "Level of Education" (postsecondary vs. less than postsecondary) as predictors. Given values for the predictors, the model estimates the likelihood (between 0 and 1) of follow-up among NEET participants.
+
+```{r logistic_regression}
+
+logistic_model <- glm(Follow.up ~ Cohort + Sex + Level.of.Education, data = neet_data, family = binomial)
+summary(logistic_model)
+```
+The model parameters suggest that:
+
+1. The likelihood for follow-up without any predictors, corresponding to the intercept, is 69.31%.
+
+2. Gender significantly influences follow-up behavior: the positive coefficient means that females (coded as 1) are more likely to follow up compared to males, and the p-value of 0.0116 is statistically significant. To interpret the effect of being female, the coefficient (0.37151) is exponentiated, $e^{0.37151} \approx 1.45$, meaning that the odds of follow-up for females are approximately 1.45 times higher than for males, all else being equal.
+
+3. Level of education has a positive coefficient suggesting a positive influence on follow-up (postsecondary education  coded as 1 is associated with a higher probability of follow-up). However, it does not reach conventional levels of statistical significance (p = 0.0785, p > 0.05).
+
+4. "Cohort", corresponding to the received treatment, does not have a statistically significant impact on follow-up rates with a p-value of 0.7361.
+
+5. The negligible improvement in the residual deviance (1094.5) from the null model (1104.7, based entirely on the intercept) suggests that including the predictors does not substantially improve the model's explanatory power.
+
+In simple terms, the logistic model overall does not explain the data very well. According to its parameters, receiving treatment and the level of education are not very informative indicators, but being female increases the likelihood of follow-up by 45%.
+
+## Treatment effect
+
+Assuming that treatment (1 or 0) was assigned at random, the treatment effect of social work can be calculated.
+
+```{r treatment_effect}
+# predicted probabilities for SW group
+# the predictor values are:
+# (0,0) = male no postsec. education, (0,1) = male with postsec. education
+# (1,0) = female no postsec. education, (1,1) = female with postsec. education
+prob_SW <- predict(logistic_model, newdata = data.frame(Cohort = 1, Sex = c(0, 0, 1, 1), Level.of.Education = c(0, 1, 0, 1)), type = 'response')
+# predicted probabilities for control group
+prob_control <- predict(logistic_model, newdata = data.frame(Cohort = 0, Sex = c(0, 0, 1, 1), Level.of.Education = c(0, 1, 0, 1)), type = 'response')
+# Calculate treatment effect
+treatment_effect <- prob_SW - prob_control
+
+```
+
+```{r treatment_effect_table}
+library(knitr)
+predictor_sex <- c("M", "M", "F", "F")
+predictor_education <- c("0", "1", "0", "1")
+
+table_data <- data.frame(Sex = predictor_sex,
+                         Postsec_Ed = predictor_education,
+                         prob_SW = prob_SW,
+                         prob_Control = prob_control,
+                         Treatment_Effect = treatment_effect)
+
+kable(table_data, format = "markdown")
+```
+```{r pressure}
+men_values <- c(treatment_effect[1], treatment_effect[2])
+women_values <- c(treatment_effect[3], treatment_effect[4])
+education_levels <- c('0', '1')
+
+bar_positions <- barplot(rbind(men_values, women_values), beside=TRUE, 
+                         names.arg=education_levels, 
+                         col=c('lightblue', 'pink'), 
+                         ylim=c(0, 0.015),
+                         xlab='Postsecondary Education',
+                         ylab='Treatment Effect',
+                         main='Treatment Effect for Men and Women \n According to Level of Education')
+text(bar_positions[1, ], men_values, labels=round(men_values, 4), pos=3, cex=0.8, col='black')
+text(bar_positions[2, ], women_values, labels=round(women_values, 4), pos=3, cex=0.8, col='black')
+
+legend('topright', legend=c('Men', 'Women'), fill=c('lightblue', 'pink'))
+```
+
+The treatment effect, as depicted in the plot, shows a positive but small increase in the likelihood of follow-up across all subgroups in the dataset. This means that social work as a treatment has a positive impact on the likelihood of follow-up, but the increase is not substantial.
+
+Males are impacted more than females for both education levels, suggesting that the treatment has a relatively larger effect on males regardless of their education level. Females with postsecondary education follow-up rates are the least affected by the treatment.
+
+## Logistic vs Linear regression
+
+Linear regression assumes linearity, which not only assumes a certain relationship between  predictors and the outcome but also dictates how the model coefficients are interpreted. The model is defined for values of $x$ from $-\infty$ to $\infty$, which can be misleading when working with categorical variables. Coefficients are the change in the outcome variable for a one-unit change in a parameter: an increase of 1 for $x_1$ corresponds to a change of $\beta_1$ for the outcome. 
+
+Logistic regression models the probability of a binary outcome using the logistic (sigmoid) function, which ensures that the predicted probabilities are between 0 and 1. Logistic regression is well-suited for categorical variables. The coefficients represent the change in the log-odds of the outcome variable for a one-unit change in the predictor variable.
