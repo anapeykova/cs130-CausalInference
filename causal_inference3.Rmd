@@ -1,0 +1,139 @@
+---
+title: 'Part III: Synthetic Control for Andalucia'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data
+
+The `basque` dataset in R spans 1955–1997 and covers 17 Spanish regions. It was used by Abadie and Gardeazabal (2003) to explore the economic impacts of conflict, specifically the Basque Country's terrorist conflict. Their study created a blend of other Spanish regions to make a synthetic control resembling key economic traits of the Basque Country pre-terrorism. It included per-capita GDP (as the outcome variable), with predictors like population density, sectoral production, investment, etc.. The paper also serves as a demonstration of the `Synth` library's synthetic control method implementation.
+
+## Synthetic Control 
+
+Given that I don't have a specific research question or a defined treatment event in mind, I'll generate a synthetic control for GDP per capita that spans from 1961 to 1997. 1961 represents the earliest year with available predictor data, while 1997 marks the dataset's final year. If successful, this synthetic group could serve as an initial control for assessing an event of interest occurring after 1997. The following analysis aims to impartially evaluate the synthetic control, free from any influence or prior knowledge of the treatment event.
+
+```{r pressure, include=FALSE}
+#install.packages("Synth", repos='http://cran.us.r-project.org')
+library(Synth)
+```
+
+```{r include=FALSE}
+data("basque")
+attach(basque)
+```
+
+```{r create_synthetic_control, include=FALSE}
+dataprep.out<-
+  dataprep(
+   foo = basque,
+   predictors = c("invest"),
+   predictors.op = "mean",
+   dependent = "gdpcap",
+   unit.variable = "regionno",
+   time.variable = "year",
+   special.predictors = list(
+    list("sec.agriculture", seq(1961, 1969, 2), "mean"), # data is available for every two years, from 1961 till 1969
+    list("sec.energy", seq(1961, 1969, 2), "mean"),
+    list("sec.industry", seq(1961, 1969, 2), "mean"),
+    list("sec.construction", seq(1961, 1969, 2), "mean"),
+    list("sec.services.venta", seq(1961, 1969, 2), "mean"),
+    list("sec.services.nonventa", seq(1961, 1969, 2), "mean"),
+    list("popdens", 1969,"mean")), # data is only available for 1969
+   treatment.identifier = "Andalucia",
+   unit.names.variable = "regionname", # using the name rather than the number so need to add unit.name.variable
+   controls.identifier = c(3:16,18), # dropping 1: Spain, 2: Andalucia and 17: Basque
+   time.predictors.prior = 1961:1997,
+   time.optimize.ssr = 1961:1997,
+   time.plot = 1961:1997)
+
+synth.out <- synth(dataprep.out)
+```
+Visualizing the results from the synthetic match function: 
+
+```{r synth_path_plot, echo=FALSE}
+path.plot(dataprep.res = dataprep.out,synth.res = synth.out)
+```
+The synthetic control model closely mirrors Andalucia's actual economic trajectory. Initially, there's a trend of underestimating GDP, shifting to an overestimation tendency around 1985. While the lines generally follow similar patterns—like minor peaks around 1973 or a more significant one near 1990—there are disparities in exact values. The plot below illustrates these discrepancies: 
+
+```{r synth_gap_plot, echo=FALSE}
+gaps.plot(dataprep.res = dataprep.out,synth.res = synth.out)
+```
+
+The plot highlights a negative gap emerging around the 1985 mark.
+
+To better understand the results, the `Synth` package provides the exact weights of the countries from the donor pool.
+
+```{r donors_weights, echo=FALSE}
+synth.tables <- synth.tab(
+      dataprep.res = dataprep.out,
+      synth.res = synth.out)
+print(synth.tables$tab.w)
+```
+
+The synthetic Andalucia is composed of 0.743 Extremadura, 0.168	Murcia and 0.089	Madrid. It is mostly composed of a single donor country, Extremadura, which makes the results highly dependent on it, a potential sign of high sensitivity and lack of robustness. Plotting and comparing the GDP of all countries, the reason for this becomes apparent.
+
+
+```{r gdp_comparison_plot, echo=FALSE}
+library(ggplot2)
+
+ggplot(basque, aes(x = year, y = gdpcap, group = regionno)) +
+  geom_line(color = "gray", linewidth = 0.5) +
+  geom_line(data = subset(basque, regionname %in% c("Andalucia", "Extremadura")), aes(color = regionname), linewidth = 1) +
+  labs(x = "Year", y = "GDP per Capita", title = "GDP per Capita by Region") +
+  scale_color_manual(values = c("Andalucia" = "deeppink3", "Extremadura" = "green3")) +
+  theme_minimal()
+```
+
+Andalucia ranks at the lower end of the GDP spectrum, second only to Extremadura. Creating synthetic controls for extreme cases is tricky—recreating Extremadura accurately would impossible since the weights for donor countries need to be positive and adding up to 1. Fortunately, Andalucia is not an edge case but since only one country has a lower GDP, balancing the overestimation of other states relies on this singular country.
+
+However, Andalucia being the second to last country and being heavily dependent on the last country, Extremadura, it is unfeasible to test the synthetic control for robustness by removing Extremadura from the donor pool. The resulting match (composed of Murcia, Castilla Y Leon and the Canaries) systematically overestimates the true GPD:
+
+```{r leave_extremadura_out, include=FALSE}
+basque2 <- basque[basque$regionname!="Extremadura",]
+  
+dataprep2.out<-
+  dataprep(
+   foo = basque2,
+   predictors = c("invest"),
+   predictors.op = "mean",
+   dependent = "gdpcap",
+   unit.variable = "regionno",
+   time.variable = "year",
+   special.predictors = list(
+    list("sec.agriculture", seq(1961, 1969, 2), "mean"), # data is available for every two years, from 1961 till 1969
+    list("sec.energy", seq(1961, 1969, 2), "mean"),
+    list("sec.industry", seq(1961, 1969, 2), "mean"),
+    list("sec.construction", seq(1961, 1969, 2), "mean"),
+    list("sec.services.venta", seq(1961, 1969, 2), "mean"),
+    list("sec.services.nonventa", seq(1961, 1969, 2), "mean"),
+    list("popdens", 1969,"mean")), # data is only available for 1969
+   treatment.identifier = "Andalucia",
+   unit.names.variable = "regionname", # using the name rather than the number so need to add unit.name.variable
+   controls.identifier = c(3:11,13:16,18), # dropping 1: Spain, 2: Andalucia and 17: Basque
+   time.predictors.prior = 1961:1997,
+   time.optimize.ssr = 1961:1997,
+   time.plot = 1961:1997)
+
+synth2.out <- synth(dataprep2.out)
+```
+
+```{r leave_extremadura_out_results, echo=FALSE}
+synth2.tables <- synth.tab(
+      dataprep.res = dataprep2.out,
+      synth.res = synth2.out)
+print(synth2.tables$tab.w)
+path.plot(dataprep.res = dataprep2.out,synth.res = synth2.out)
+
+```
+
+Going back to the original synthetic control, to better understand what "drives" the match, the `Synth` package provides the covariates' balance too.
+
+```{r unit_weights, echo=FALSE}
+print(synth.tables$tab.v)
+```
+
+The table shows the unit weights, meaning the impact each predictors has within the synthetic control model. These weights indicate the relative contribution of each predictor variable toward constructing the synthetic Andalucia. The synthetic control is mostly driven by non-venta services and population density (as of 1969). Whether this balance is good or not depends on the underlying nature of these predictors. It might be advantageous if these predictors reflect the economic landscape accurately (that is, Andalucia's economy is mostly driven by non-venta services; unlikely to be true as a quick Google search reveals Andalucia has a somewhat agrarian economy). Usually more diverse or evenly distributed weights across predictors are considered more robust.
+

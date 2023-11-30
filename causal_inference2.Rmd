@@ -1,0 +1,244 @@
+---
+title: 'Part II: Sustainable Buildings'
+output: pdf_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+## Data
+In this analysis, I will explore the impact of a green rating on revenue per square meter with `age`, `stories`, `size`, and `class` as covariates. The variable `class`, a qualitative one, is numerically encoded. 
+
+```{r load_dataset, include=FALSE}
+library(readr)
+library(Matching)
+set.seed(130)
+
+file_url <- "https://drive.google.com/uc?id=1dWJTCy24Yp9xeXKz8lJK0-O_OvIAcAWM"
+data <- read_csv(file_url, show_col_types = FALSE)
+data$num_class <- as.numeric(factor(data$class))
+
+attach(data)
+```
+
+```{r rgenoud, include=FALSE}
+#remove.packages("rgenoud")
+#update.packages("rgenoud")
+
+#install.packages("rgenoud", repos="https://cran.r-project.org")
+#library(rgenoud)
+#??rgenoud
+```
+
+## Genetic Matching
+
+```{r genetic_matching, include=FALSE}
+X = cbind(size,stories,age,num_class)
+
+genout <- GenMatch(Tr=green_rating, estimand="ATT", X = X, M=1,
+                   pop.size=100, max.generations=100, 
+                   wait.generations=5)
+```
+
+This genetic matching attempts to balance the potential confounders size, stories, age and class to understand the effect of having a green rating on the revenue per square foot variable. The results were found on the 7th generation and demonstrate a good degree of balance achieved across these confounders before and after matching. 
+
+```{r genetic_matching_results, echo=FALSE}
+mout <- Match(Tr=green_rating, X = X, Weight.matrix = genout, Y = rev_psf)
+summary(mout)
+
+mb <- MatchBalance(
+    green_rating ~ 
+    size + age + stories + num_class,
+    match.out=mout, nboots=500)
+```
+Initially, there was a significant difference in size between the treatment and control groups, where green-rated buildings tend to be much larger with a mean of 326 101 compared to a mean of 226 158. After matching, the mean values became much closer. Achieving a p-value of 0.36475 indicates a better balance: a small p-value means the difference across groups is less likely to be due to random chance or noise in the data; a large p-value of 0.36475 means the groups are likely not substantially different and therefore suitable for comparative analysis.
+
+Similar to larger size, green-rated buildings also tend to have more floors, with an average value of 15.343 compared to 13.424. After matching, the mean values converged, resulting in a high p-value of 0.43585, indicating better similarity.
+
+Expectedly, green buildings are also much newer: an older building is less likely to be green-certified. Matching brought the mean values closer, decreasing the control group mean from roughly 49 to 24 years. Notably, the extreme mean standard deviation of -162.69 (there must be some really old buildings in those clusters!) decreased to -0.4149.  The p-value of 0.348 suggests a good improvement in balance.
+
+The last covariate, class, is a little trickier to analyze using a mean value since it is a qualitative variable (classes are A, B, C) encoded as a numeric one. Assuming that class is an ordered variable (that is, B is a middle value of A and C), the genetic matching achieves a good balance too, with the highest of all p-values, 0.38413. Here the Kolmogorov-Smirnov (KS) statistic is particularly useful as it represents the maximum discrepancy between the distributions of the treatment and control groups. Lower values indicate better similarity between the groups, and a value of 0.017964 for class is a good sign.
+
+The estimated treatment effect is 1.4077, which is positive, suggesting green-rated buildings bring in more revenue per square foot. However, the p-value of 0.073456 indicates that the treatment effect estimate might not be statistically significant under the conventional significance threshold of 0.05. In practical terms, the impact of having a green rating on revenue per square foot might not be reliably different from zero.
+
+## Genetic Matching 2.0
+
+The genetic matching function allows for various fine-tuning adjustments, like exact matching and caliper. Considering the house analysis context, exact matching is fitting for the `class` variable (numerically encoded as `num_class`) since, as mentioned earlier, it is categorical. Exact matching on number of floors and age is tricky, and on size it is likely too restrictive. Therefore, for these variables we can set thresholds for the maximum acceptable difference between treatment and control units.
+
+Caliper, however, is expressed in standardized units, so the number 2 would not translate to 2 floors but 2 standard deviations. Therefore, looking at the standardized mean difference of -162.69 for age prior to matching, the caliper must be set to a small value, for example 0.01. The number of floors also varies a lot with a standard mean difference of 14.413 (14 in the context of floors is much more than 14 in the context of age). Let us set the caliper for floors to 0.25.
+
+```{r exact_gen_match, include=FALSE}
+X = cbind(size,stories,age,num_class)
+
+genout2 <- GenMatch(Tr=green_rating, estimand="ATT", X = X, M=1,
+                    exact=c(FALSE,FALSE,FALSE,TRUE),
+                    caliper=c(NA,0.01,0.25,NA),
+                    pop.size=100, max.generations=100,
+                    wait.generations=5)
+```
+
+```{r exact_gen_match_results, echo=FALSE}
+mout2 <- Match(Tr=green_rating, X = X,
+               Weight.matrix = genout2,
+               exact=c(FALSE,FALSE,FALSE,TRUE),
+               caliper=c(NA,0.01,0.25,NA),
+               Y = rev_psf)
+summary(mout2)
+
+mb2 <- MatchBalance(
+    green_rating ~ 
+    size + age + stories + num_class,
+    match.out=mout2, nboots=500)
+```
+
+Upon imposing the constraints discussed above, 34 treated units were dropped due to either exact matching or caliper restrictions. In relation to the total number of treated units (679), 34 dropped units is relatively small. The observed treatment effect was close but smaller than the previous one, dropping from 1.4422 to 1.081; the corresponding value is higher too, increasing from 0.078641 to 0.14678.
+
+The analysis suggests that green certification does not affect revenue per square foot in a statistically significant way.
+
+## Quantile Effects Using Genetic Matching with Caliper
+
+```{r matched_units, echo=FALSE}
+treated_units <- data[mout2$index.treated,]
+control_units <- data[mout2$index.control,]
+matched_data <- rbind(treated_units,control_units)
+
+cat('Dropped units:',length(mout2$index.dropped),'\nControl units after genetic matching:', length(mout2$index.control),'\nTreated units after genetic matching:', length(mout2$index.treated),'\nUnique treated units:',length(unique(mout2$index.treated)))
+```
+
+Using the genetically matched data with caliper, the new and balanced dataset contains 1303 treated and 1303 control units. 34 treated units from the original dataset were dropped, and 654 out of the new treated units are unique. The significant increase in treated units (654 to 1303) is due to repetition: several datapoints were matched to multiple control units; in practice, no unit got "treated" (rated as green).
+
+The revenue per square foot distributions for the treatment and control groups are visualized below. The control group has a longer right tail, with a single outlier around the 250 mark. Besides this, the two distributions seem fairly similar, which is in agreement with the lack of statistically significant treatment effect.
+
+```{r matched_rev_psf_comparison_plot, echo=FALSE}
+hist_control <- hist(control_units$rev_psf, breaks=seq(min(data$rev_psf), max(data$rev_psf) + 5, by = 5), plot = FALSE)
+hist_treated <- hist(treated_units$rev_psf, breaks=seq(min(data$rev_psf), max(data$rev_psf) + 5, by = 5), plot = FALSE)
+
+barplot(hist_control$counts, col='black', ylim=c(-400, 400), xlab='Values', ylab='Density', main='Distributions for Revenue per Square Foot')
+
+barplot(-hist_treated$counts, col='lightgreen', add=TRUE)
+legend("topright", legend = c("control", "green-rated"), col = c("black", "lightgreen"), pch = 15)
+
+```
+
+To quantify the similarity of the two distributions, we look into the quantiles for each distribution. Plotting them together, it is evident that the distributions of the treated and control groups are consistently close to each other. With a small exception around the 25th percentile where the control groups is slightly ahead, the green-rated group has a higher revenue. The margins increase around the mean and the 75th percentile, but even there the difference is not substantial. These margin represent the quantile effect - the treatment effect of a green rating as observed through the distribution's quantiles.
+
+```{r quantiles_plots, echo=FALSE}
+quantiles = c(0.1,0.25, 0.5,0.75, 0.9,1)
+treat_qs <- c(quantile(treated_units$rev_psf, probs = quantiles))
+control_qs <- c(quantile(control_units$rev_psf, probs = quantiles))
+# Create an empty plot
+plot(1, type = "n", xlim = c(10, 50), xlab = "Revenue per Square Foot", main = "Quantiles for Revenue per Square Foot", ylab="", yaxt='n')
+
+# Add vertical lines for quantiles
+abline(v = treat_qs, col = "green3", lwd=2)
+abline(v = control_qs, col = "black", lwd = 2)
+
+text(control_qs, par("usr")[3], labels = c(0.1,'', 0.5,0.75, 0.9,1), xpd = TRUE, srt = 90, adj = c(-1, -0.5), col='black', cex=0.75)
+text(control_qs, par("usr")[3], labels = c('',0.25, '','', '',''), xpd = TRUE, srt = 90, adj = c(-3, 1.2), col='black', cex=0.75)
+
+text(treat_qs, par("usr")[3], labels = c('',0.25, '','', '',''), xpd = TRUE, srt = 90, adj = c(-1, -0.5), col='green4', cex=0.75)
+text(treat_qs, par("usr")[3], labels = c(0.1,'', 0.5,0.75, 0.9,1), xpd = TRUE, srt = 90, adj = c(-3, 1.2), col='green4', cex=0.75)
+
+
+legend("topright", legend = c("green rated", "control"), col = c("green3", "black"), lwd = 2, cex=0.75)
+
+```
+
+As mentioned above, the control group distribution has a very long right tail. To visualize this, the plot below shows the 50th, 95th and 100th quantiles. Notice how the margins between the first two are very small, while the 100th quantiles are more than 100 units apart.
+
+```{r margins_plot, echo=FALSE}
+quantiles = c(0.5,0.95, 1)
+treat_qs <- c(quantile(treated_units$rev_psf, probs = quantiles))
+control_qs <- c(quantile(control_units$rev_psf, probs = quantiles))
+# Create an empty plot
+plot(1, type = "n", xlim = c(10, 250), xlab = "Revenue per Square Foot", main = "50%, 95% and 100% Quantiles for Revenue per Square Foot", ylab="", yaxt='n')
+
+# Add vertical lines for quantiles
+abline(v = treat_qs, col = "green3", lwd=2)
+abline(v = control_qs, col = "black", lwd = 2)
+
+text(control_qs, par("usr")[3], labels = quantiles, xpd = TRUE, srt = 90, adj = c(-1, -0.5), col='black', cex=0.75)
+text(treat_qs, par("usr")[3], labels = quantiles, xpd = TRUE, srt = 90, adj = c(-3, 1.2), col='green4', cex=0.75)
+
+legend("topright", legend = c("green rated", "control"), col = c("green3", "black"), lwd = 2, cex=0.75)
+```
+
+The plot below summarizes all possible "margins": it shows how the treatment effect varies across quantiles.
+
+To complement the average treatment effect, where the mean as a single value might hide potentially important variations, quantile effects reveal the treatment across different levels of the outcome variable.
+
+In this case, the treatment effect is negative between the 10th to 30th percentile, as well as above the 90th; the latter is due to the outlier data points discussed above. The plot suggests that a green rating might increase revenue for buildings that are have average or above average revenue; however, it is important to remember that a quantile effect shows what happens to a distribution, not to individual buildings.
+
+```{r quantile_effects, echo=FALSE}
+zz <- quantile(treated_units$rev_psf, probs = c(1:99/100)) - quantile(control_units$rev_psf, probs = c(1:99/100))
+
+plot(x = c(1:99/100), y = zz, xlab = "Quantiles", main="Revenue per Square Foot: Quantile Effects", ylab = "Treatment Effects", col = "green4")
+abline(h=0)
+```
+
+## Sensitivity Analysis
+
+Matching methods aim to balance observed confounding variables between treatment and control groups. Sensitivity analysis helps gauge the impact of hidden biases - that is, unobserved variables correlated with both the outcome and at least one predictor variable.
+
+The goal of sensitivity analysis is to assess how robust or sensitive the model's results are to such potential unobserved confounders. If a minor or less important variable could significantly impact the results, it indicates that the model is sensitive and less robust. Conversely, if a confounder would need to be highly influential to alter the findings, there is a lower likelihood of such an unobserved variable existing, increasing confidence in the results.
+
+Before going into sensitivity analysis, it is a good idea to look into the model of choice first. The model used so far uses green rating, size, age, stories and class to predict revenue per square foot.
+
+```{r model_summary, echo=FALSE}
+summary(lm(rev_psf ~ green_rating + size + age + stories + num_class, data=matched_data))
+```
+While all but the green rating predictors are statistically significant, their coefficients are extremely low and the model's explanatory power is below 3% with adjusted $R^2$ of 0.02756.  This means that the independent variables are not explaining much of the variability in the dependent variable. A sensitivity analysis might not provide very meaningful insights, as the model is not capturing much of the data's variability to begin with.
+
+Perhaps another model would be more suitable for sensitivity analysis. Including the `Rent` variable increases the model's explanatory power to 92.54%. 
+
+```{r model_rent_summary, echo=FALSE}
+rent_incl_model<-summary(lm(rev_psf ~ leasing_rate + green_rating + size + age + stories + num_class, data=matched_data))
+rent_incl_model
+```
+This great change can be explain by an extremely high correlation between rent and revenue. This is in fact the case, as seen in the top left corner of the pair plot below:
+
+```{r pairplot, echo=FALSE}
+pairs(data.frame(data$rev_psf,data$Rent,data$green_rating,data$age,data$stories,data$num_class))
+```
+
+This positive correlation is hardly surprising: revenue is the total money generated, where rent is likely the main contributor. The higher the rent, the more the landlord earns from the property.
+
+The imbalance between the predictors' contributions makes the model unnecessarily complicated. If we strip all predictors but the rent, the achieved explanatory power is only 0.2% smaller than that of the model with all 6 predictors:
+
+```{r only_rent, echo=FALSE}
+rent_model<- summary(lm(rev_psf ~ leasing_rate, data=matched_data))
+cat('Adjusted R_squared: \n',rent_incl_model$adj.r.squared, 'for 6 predictors, rent included \n', rent_model$adj.r.squared, 'for 1 predictor, rent alone')
+```
+The imbalance between the predictors' contributions also makes choosing the benchmark variable in a sensitivity analysis tricky: if we compare against rent, the explanatory power of that variable is substantially different than the explanatory power of any of the other variables alone.
+
+
+```{r sensemakr, include=FALSE}
+install.packages('sensemakr', repos='http://cran.us.r-project.org')
+library(sensemakr)
+```
+
+```{r sensitivity, echo=FALSE}
+sensitivity1 <- sensemakr(formula = rev_psf ~ Rent + green_rating + size + age + stories + num_class,data=matched_data, treatment = "green_rating",benchmark_covariates = "Rent", kd = 1:1)
+cat('Benchmark: Rent; kd = 1:1 \n')
+plot(sensitivity1)
+
+sensitivity2 <- sensemakr(formula = rev_psf ~ Rent + green_rating + size + age + stories + num_class,data=matched_data, treatment = "green_rating",benchmark_covariates = "size", kd = 1:3)
+cat('Benchmark: size; kd = 1:3')
+plot(sensitivity2)
+
+sensitivity3 <- sensemakr(formula = rev_psf ~ Rent + green_rating + size + age + stories + num_class,data=matched_data, treatment = "green_rating",benchmark_covariates = "size", kd = 1:65)
+cat('Benchmark: size; kd = 1:70')
+plot(sensitivity3)
+```
+
+The two plots are a little difficult to interpret, due to the variables' extreme explanatory powers discussed above. The `size` sensitivity plot takes steps that are too little (3x size is still very close to the base effect). It seems that we cross the 0 effect dashed red line roughly around `kd = 65`. 
+
+
+```{r, echo=FALSE}
+sensitivity2
+```
+The coefficient estimate of `green_rating` is statistically significant, as indicated by the t-value 2.5548, which is greater than 1.96.
+However, the low partial $R^2$ of 0.00251 suggests that `green_rating` alone explains a small portion (0.25% to be exact) of the variation in the outcome. The robustness value indicates that the estimated treatment effect is sensitive to potential unobserved confounding variables. Even weak unobserved confounders might significantly affect the estimated treatment effect, so there is a need for caution when interpreting the results if we were to ever adopt this awful, awful model. 

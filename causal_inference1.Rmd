@@ -1,0 +1,95 @@
+---
+title: "Part I: Wantchekon's Study of Clientelism and Voting Behavior"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+In his 2003 "Clientelism and Voting Behavior" Leonard Wantchekon covers a field experiment conducted during the 2001 presidential elections in Benin, comparing the public response to clientelist, broad public policy and control group messaging. He conducted the study in collaboration with four political parties, and the analysis suggests that clientelism had positive and statistically significant impact for all four, while public policy worked well in the South but not so well in the North.
+
+## Data
+
+For the purposes of the analysis to follow, treatment (`treat`) is only a binary variable, showing whether the village got public policy (1) or clientelist (0) messaging; the outcome variable is vote share (`vote_pop`), which is a value between 0 and 1; and number of registered voters (`reg_voters`) is an integer.
+
+```{r load_dataset, include = FALSE}
+install.packages("combinat", repos='http://cran.us.r-project.org')
+library(combinat)
+library(readr)
+d=read_csv("https://bit.ly/2SKjUn2", show_col_types = FALSE)
+```
+
+The original study involves 20 villages, but the dataset discussed here only covers 16 of them, which were well separated from each other to avoid "cross-contamination" of the two treatments. The 16 villages are split into 8 blocks of 2 based on similarity, each block containing a treatment and non-treatment village.
+
+## Fisher's Exact Test
+
+a. The smallest possible p-value applying an one-tailed Fisher's Exact Test, given that there is a population of 16 with 8 treated units, is $\frac{1}{^{16}P_8} = \frac{1}{\frac{16!}{(16-8)!}} = \frac{1}{12870} \approx 0.00008$. That is, there are 12870 combinations of 8 out of 16 observations and consequently, 12870 possible assignments; the most extreme observation in these data would be the most extreme out of 12870. So the likelihood of getting a value this or more extreme would be 1 out of 12870.
+
+Applying Fisher's Exact test begins with setting a null hypothesis: we assume the treatment has no effect on the outcome, meaning we observe the same vote share no matter if the village got public policy or clientelist messaging.
+
+Next, we specify a test statistic; in this case, let us look at the difference of means.
+
+As discussed above, there are 16 choose 8, or $^{16} P_8 = 12870$ possible assignments of treatment. The true assignment is:
+
+
+```{r true_assignment, echo=FALSE}
+treatment = numeric(length(d$treat))
+treatment[d$treat=="pub.pol"] = 1
+treatment
+```
+
+with a difference of means of:
+
+```{r treatment_effect, echo=FALSE}
+true.treated <- which(treatment != 0)
+true.control <- c(setdiff(1:16, true.treated))
+te <- mean(d$vote_pop[true.treated]) - mean(d$vote_pop[true.control])
+te
+```
+
+The treatment effect is negative, meaning public policy messaging is associated with a decrease in the vote share, suggesting clientelism is the more effective strategy.
+
+To determine whether the results are statistically significant, we calculate the p-value of the observed outcome. We iterate through all 12870 possible assignments and calculate the test statistic for each, keeping track of the results in order to get the distribution.
+
+```{r assignment_outcome_distribution}
+fisherexacttest <-function(n = 16, choose = 8, Y = d$vote_pop) {
+  
+  distribution.vector <- NA
+  
+  for(i in 1:dim(combn(n,choose))[2]) {
+    
+    treated <- c(combn(n,choose)[,i])
+    control <- c(setdiff(1:n, treated))
+    
+    distribution.vector[i] <- mean(Y[treated]) - mean(Y[control])
+    
+  }
+  
+  return(distribution.vector)
+  
+}
+
+fisher.distribution <- fisherexacttest()
+
+```
+
+The distribution of treatment effects for all possible assignments is shown below. The actual observed treatment effect is marked in red.
+
+```{r plot_distribution, echo=FALSE}
+hist(fisher.distribution, col = 'white', xlab = 'Difference of means', main = 'Treatment effect distribution')
+abline(v = te, col = "red3", lty=1, lwd=2.5)
+legend("topright", legend = "true treatment effect", col = "red3", lty = 1, lwd=2.5, cex=0.75)
+```
+
+To get the p-value, we need to know how many of the assignments result in treatment effect this extreme or more. That is, we'd like to know the proportion of values in the histogram that are on the left side of the red line. The p-value is:
+
+```{r p_value, echo=FALSE}
+pval <- sum(fisher.distribution <= te)/length(fisher.distribution)
+pval
+```
+The p-value 0.049 is statistically significant (under the commonly adopted threshold of 0.05), suggesting the conducted experiment provides evidence to reject the null hypothesis that the treatment has no impact.
+
+The observed treatment effect is statistically significant and shows that clientelist messaging is associated with 15.75% increase in vote share.
